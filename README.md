@@ -80,12 +80,14 @@ Benchmark conditions to record for future runs:
 
 | Field | Value |
 | --- | --- |
-| Machine / CPU / memory | TBD |
-| Operating system | TBD |
-| Compiler | TBD |
-| Build mode and flags | TBD |
-| Storage medium | TBD |
-| Git commit | TBD |
+| Machine | MacBook Pro 14 inch 2024 |
+| CPU | Apple M4 |
+| Memory | 16 GB unified memory   |
+| Operating system | 26.2 (25C56) |
+| Compiler | clang++ (Apple Clang 17.0) |
+| Build flags | -O3 -march=native -std=c++17  |
+| Storage medium | Internal NVMe SSD |
+| Git commit | 7808a016c160c8b0167c395443920b65153afe25 |
 
 ## Testing
 

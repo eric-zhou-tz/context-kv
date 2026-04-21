@@ -1,0 +1,165 @@
+#include "persistence/snapshot.h"
+
+#include "persistence/binary_io.h"
+
+#include <cerrno>
+#include <cstdio>
+#include <cstdint>
+#include <fstream>
+#include <limits>
+#include <stdexcept>
+#include <unordered_map>
+#include <utility>
+
+namespace kv {
+namespace persistence {
+
+namespace {
+
+using CountType = std::uint32_t;
+using SizeType = binary_io::SizeType;
+
+constexpr std::uint32_t kSnapshotMagic = 0x3153564BU;  // "KVS1"
+constexpr std::uint32_t kSnapshotVersion = 1;
+
+void remove_if_exists(const std::string& path, const char* description) {
+  errno = 0;
+  if (std::remove(path.c_str()) != 0 && errno != ENOENT) {
+    throw std::runtime_error(std::string("failed to remove ") + description +
+                             ": " + path);
+  }
+}
+
+CountType checked_entry_count(std::size_t count) {
+  if (count > std::numeric_limits<CountType>::max()) {
+    throw std::runtime_error("too many snapshot entries");
+  }
+  return static_cast<CountType>(count);
+}
+
+void write_entry(std::ofstream& output, const std::string& key,
+                 const std::string& value) {
+  const SizeType key_size = binary_io::checked_size(key, "Snapshot key");
+  const SizeType value_size = binary_io::checked_size(value, "Snapshot value");
+
+  binary_io::write_primitive(output, key_size, "Snapshot key size");
+  binary_io::write_bytes(output, key, "Snapshot key");
+  binary_io::write_primitive(output, value_size, "Snapshot value size");
+  binary_io::write_bytes(output, value, "Snapshot value");
+}
+
+bool read_entry(std::ifstream& input, std::string& key, std::string& value) {
+  SizeType key_size = 0;
+  if (!binary_io::read_primitive(input, key_size)) {
+    return false;
+  }
+
+  key.resize(key_size);
+  input.read(key.data(), static_cast<std::streamsize>(key.size()));
+  if (!input) {
+    return false;
+  }
+
+  SizeType value_size = 0;
+  if (!binary_io::read_primitive(input, value_size)) {
+    return false;
+  }
+
+  value.resize(value_size);
+  input.read(value.data(), static_cast<std::streamsize>(value.size()));
+  if (!input) {
+    return false;
+  }
+
+  return true;
+}
+
+}  // namespace
+
+Snapshot::Snapshot(std::string path) : path_(std::move(path)) {}
+
+void Snapshot::save(
+    const std::unordered_map<std::string, std::string>& store,
+    std::uint64_t wal_offset) const {
+  const std::string temp_path = path_ + ".tmp";
+  const CountType entry_count = checked_entry_count(store.size());
+
+  {
+    // Keep the stream scoped so the temp file is closed before rename.
+    std::ofstream output(temp_path, std::ios::binary | std::ios::trunc);
+    if (!output.is_open()) {
+      throw std::runtime_error("failed to open temp snapshot file for write: " +
+                               temp_path);
+    }
+
+    binary_io::write_primitive(output, kSnapshotMagic, "Snapshot magic");
+    binary_io::write_primitive(output, kSnapshotVersion, "Snapshot version");
+    binary_io::write_primitive(output, wal_offset, "Snapshot WAL offset");
+    binary_io::write_primitive(output, entry_count, "Snapshot entry count");
+    for (const auto& entry : store) {
+      write_entry(output, entry.first, entry.second);
+    }
+
+    output.flush();
+    if (!output) {
+      throw std::runtime_error("failed to write temp snapshot file");
+    }
+  }
+
+  if (std::rename(temp_path.c_str(), path_.c_str()) != 0) {
+    throw std::runtime_error("failed to replace snapshot file: " + path_);
+  }
+}
+
+void Snapshot::clear() const {
+  // Clear both the committed snapshot and any abandoned temp file from an
+  // interrupted save. The in-memory store decides separately whether data
+  // should also be cleared.
+  remove_if_exists(path_, "snapshot file");
+  remove_if_exists(path_ + ".tmp", "temp snapshot file");
+}
+
+SnapshotLoadResult Snapshot::load(
+    std::unordered_map<std::string, std::string>& store) const {
+  std::ifstream input(path_, std::ios::binary);
+  if (!input.is_open()) {
+    return {};
+  }
+
+  std::uint64_t wal_offset = 0;
+  CountType entry_count = 0;
+  std::uint32_t first_field = 0;
+  if (!binary_io::read_primitive(input, first_field)) {
+    return {};
+  }
+
+  if (first_field == kSnapshotMagic) {
+    std::uint32_t version = 0;
+    if (!binary_io::read_primitive(input, version) ||
+        version != kSnapshotVersion ||
+        !binary_io::read_primitive(input, wal_offset) ||
+        !binary_io::read_primitive(input, entry_count)) {
+      throw std::runtime_error("failed to load snapshot metadata");
+    }
+  } else {
+    // Legacy snapshots started directly with the entry count. Treat them as
+    // covering no WAL bytes so recovery safely falls back to full WAL replay.
+    entry_count = first_field;
+  }
+
+  std::unordered_map<std::string, std::string> loaded;
+  for (CountType counter = 0; counter < entry_count; ++counter) {
+    std::string key;
+    std::string value;
+    if (!read_entry(input, key, value)) {
+      throw std::runtime_error("failed to load snapshot");
+    }
+    loaded[key] = value;
+  }
+
+  store = std::move(loaded);
+  return SnapshotLoadResult{true, entry_count, wal_offset};
+}
+
+}  // namespace persistence
+}  // namespace kv

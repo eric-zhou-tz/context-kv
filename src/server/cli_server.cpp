@@ -55,6 +55,10 @@ void CliServer::Execute(const parser::Command& command, std::ostream& output, bo
       case parser::CommandType::kDel:
         output << (store_.Delete(command.key) ? "1" : "0") << '\n';
         break;
+      case parser::CommandType::kClearPersistence:
+        store_.ClearPersistence();
+        output << "OK persistence cleared\n";
+        break;
       case parser::CommandType::kHelp:
         PrintHelp(output);
         break;
@@ -80,6 +84,7 @@ void CliServer::PrintHelp(std::ostream& output) const {
   output << "  SET <key> <value>\n";
   output << "  GET <key>\n";
   output << "  DEL|DELETE <key>\n";
+  output << "  CLEAR PERSISTENCE\n";
   output << "  HELP\n";
   output << "  EXIT\n";
 }

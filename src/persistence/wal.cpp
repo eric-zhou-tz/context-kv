@@ -2,6 +2,7 @@
 #include "persistence/wal.h"
 
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -143,11 +144,71 @@ void WriteAheadLog::append_delete(const std::string& key) {
   }
 }
 
+std::uint64_t WriteAheadLog::current_offset() {
+  output_.flush();
+  if (!output_) {
+    throw std::runtime_error("failed to flush WAL before reading offset");
+  }
+
+  output_.seekp(0, std::ios::end);
+  if (!output_) {
+    throw std::runtime_error("failed to seek WAL output stream");
+  }
+
+  const std::streampos position = output_.tellp();
+  if (position == std::streampos(-1)) {
+    throw std::runtime_error("failed to read WAL offset");
+  }
+
+  return static_cast<std::uint64_t>(position);
+}
+
+void WriteAheadLog::clear() {
+  // The WAL keeps an append stream open for normal writes. Close and reopen it
+  // around truncation so future SET/DELETE records continue using the same WAL
+  // object after persistence has been cleared.
+  output_.close();
+  output_.clear();
+
+  {
+    std::ofstream truncated(path_, std::ios::binary | std::ios::trunc);
+    if (!truncated.is_open()) {
+      throw std::runtime_error("failed to truncate WAL file: " + path_);
+    }
+
+    truncated.flush();
+    if (!truncated) {
+      throw std::runtime_error("failed to clear WAL file: " + path_);
+    }
+  }
+
+  output_.open(path_, std::ios::binary | std::ios::app);
+  if (!output_.is_open()) {
+    throw std::runtime_error("failed to reopen WAL file: " + path_);
+  }
+}
+
 // Replay the KV store after startup
 std::size_t WriteAheadLog::replay(
     std::unordered_map<std::string, std::string>& store) const {
+  return replay_from(0, store);
+}
+
+std::size_t WriteAheadLog::replay_from(
+    std::uint64_t offset,
+    std::unordered_map<std::string, std::string>& store) const {
+  if (offset > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::streamoff>::max())) {
+    throw std::runtime_error("WAL replay offset is too large");
+  }
+
   std::ifstream input(path_, std::ios::binary);
   if (!input.is_open()) {
+    return 0;
+  }
+
+  input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+  if (!input) {
     return 0;
   }
 

@@ -21,6 +21,7 @@ using SizeType = binary_io::SizeType;
 
 constexpr std::uint32_t kSnapshotMagic = 0x3153564BU;  // "KVS1"
 constexpr std::uint32_t kSnapshotVersion = 1;
+constexpr std::size_t kMaxSnapshotFieldLength = 64U * 1024U * 1024U;
 
 void remove_if_exists(const std::string& path, const char* description) {
   errno = 0;
@@ -54,8 +55,12 @@ bool read_entry(std::ifstream& input, std::string& key, std::string& value) {
     return false;
   }
 
-  key.resize(key_size);
-  input.read(key.data(), static_cast<std::streamsize>(key.size()));
+  if (key_size > kMaxSnapshotFieldLength) {
+    throw std::runtime_error("snapshot key is too large");
+  }
+
+  std::string loaded_key(key_size, '\0');
+  input.read(loaded_key.data(), static_cast<std::streamsize>(loaded_key.size()));
   if (!input) {
     return false;
   }
@@ -65,12 +70,19 @@ bool read_entry(std::ifstream& input, std::string& key, std::string& value) {
     return false;
   }
 
-  value.resize(value_size);
-  input.read(value.data(), static_cast<std::streamsize>(value.size()));
+  if (value_size > kMaxSnapshotFieldLength) {
+    throw std::runtime_error("snapshot value is too large");
+  }
+
+  std::string loaded_value(value_size, '\0');
+  input.read(loaded_value.data(),
+             static_cast<std::streamsize>(loaded_value.size()));
   if (!input) {
     return false;
   }
 
+  key = std::move(loaded_key);
+  value = std::move(loaded_value);
   return true;
 }
 

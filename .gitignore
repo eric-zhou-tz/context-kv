@@ -70,6 +70,7 @@ docker-compose.override.yml
 
 # =========================
 
+external/googletest/
 tmp/
 temp/
 *.tmp

@@ -12,19 +12,20 @@ later phases.
 - Keep the Phase 1 implementation simple and readable.
 - Maintain clean boundaries between parsing, storage, and interface layers.
 - Make future extensions possible without rewriting the core store logic.
-- Avoid external dependencies and keep the build portable.
+- Keep dependencies explicit and easy to bootstrap.
 
 ## Features
 
 - In-memory `KVStore` backed by `std::unordered_map`
 - Write-ahead log persistence in `kv_store.wal`
-- Startup WAL replay so data survives process restarts
+- Snapshot support in `kv_store.snapshot`
+- Startup snapshot load plus WAL replay so data survives process restarts
 - Basic CLI with `SET`, `GET`, `DEL`, `HELP`, and `EXIT`
 - `DELETE` is accepted as an alias for `DEL`
 - Small parser module isolated from storage logic
 - Simple Makefile-based build
 - Docker-friendly project layout
-- No external libraries
+- GoogleTest-based persistence tests
 
 ## Persistence
 
@@ -36,8 +37,9 @@ The WAL uses a compact binary record format instead of command text:
 [record_length][op][key_size][key]                     // DELETE
 ```
 
-On startup, the program replays `kv_store.wal` into the in-memory map before
-accepting commands. Malformed bounded records are skipped during replay, and an
+On startup, the program loads `kv_store.snapshot` when present, then replays
+`kv_store.wal` from the snapshot's covered byte offset before accepting
+commands. Malformed bounded WAL records are skipped during replay, and an
 incomplete trailing record stops recovery after the last valid operation.
 
 Example startup output:
@@ -76,6 +78,7 @@ The WAL is intentionally simple:
 │   └── store
 │       └── kv_store.h
 ├── scripts
+│   ├── bootstrap_gtest.sh
 │   ├── build.sh
 │   └── run.sh
 ├── src
@@ -85,13 +88,18 @@ The WAL is intentionally simple:
 │   ├── parser
 │   │   └── command_parser.cpp
 │   ├── persistence
+│   │   ├── snapshot.cpp
 │   │   └── wal.cpp
 │   ├── server
 │   │   └── cli_server.cpp
 │   └── store
 │       └── kv_store.cpp
 └── tests
-    └── test_kv_store.cpp
+    ├── helpers
+    ├── integration
+    ├── stress
+    ├── test_main.cpp
+    └── unit
 ```
 
 ## Build
@@ -121,8 +129,30 @@ Bye
 
 ## Test
 
+Tests use GoogleTest. The Makefile first looks for `external/googletest` or
+`vendor/googletest`, then falls back to common system installs. To bootstrap a
+local copy:
+
+```bash
+./scripts/bootstrap_gtest.sh
+```
+
+Run the normal unit and integration suite:
+
 ```bash
 make test
+```
+
+Run with GoogleTest timing output:
+
+```bash
+make test_verbose
+```
+
+Run the bounded stress suite:
+
+```bash
+make test_stress
 ```
 
 ## Docker

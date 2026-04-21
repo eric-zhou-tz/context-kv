@@ -14,6 +14,7 @@ enum class CommandType {
   kSet,
   kGet,
   kDel,
+  kClearPersistence,
   kHelp,
   kExit,
 };

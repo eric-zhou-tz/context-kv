@@ -98,6 +98,26 @@ Command CommandParser::Parse(const std::string& input) const {
     return command;
   }
 
+  if (verb == "CLEAR_PERSISTENCE" || verb == "CLEAR-PERSISTENCE") {
+    if (tokens.size() != 1) {
+      return MakeInvalidCommand("usage: CLEAR PERSISTENCE");
+    }
+
+    Command command;
+    command.type = CommandType::kClearPersistence;
+    return command;
+  }
+
+  if (verb == "CLEAR") {
+    if (tokens.size() != 2 || common::ToUpper(tokens[1]) != "PERSISTENCE") {
+      return MakeInvalidCommand("usage: CLEAR PERSISTENCE");
+    }
+
+    Command command;
+    command.type = CommandType::kClearPersistence;
+    return command;
+  }
+
   if (verb == "HELP") {
     Command command;
     command.type = CommandType::kHelp;

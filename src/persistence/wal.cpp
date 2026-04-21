@@ -1,7 +1,7 @@
+#include "persistence/binary_io.h"
 #include "persistence/wal.h"
 
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -12,7 +12,7 @@ namespace persistence {
 namespace {
 
 using LengthType = std::uint32_t;
-using SizeType = std::uint32_t;
+using SizeType = binary_io::SizeType;
 using OpType = std::uint8_t;
 
 // Bound individual records so corrupt lengths cannot force unbounded memory
@@ -24,43 +24,6 @@ enum class WalOp : OpType {
   Delete = 2,
 };
 
-// helper for writing fixed values
-template <typename T>
-void write_primitive(std::ofstream& out, const T& value) {
-  // WAL integers are written in the host byte order for now. This is fine for a
-  // local toy store, but a portable format would pin an explicit endianness.
-  out.write(reinterpret_cast<const char*>(&value), sizeof(T));
-  if (!out) {
-    throw std::runtime_error("failed to write WAL primitive");
-  }
-}
-
-template <typename T>
-bool read_primitive(std::ifstream& in, T& value) {
-  // Return false for short reads so replay can stop cleanly at a torn trailing
-  // record.
-  in.read(reinterpret_cast<char*>(&value), sizeof(T));
-  return static_cast<bool>(in);
-}
-
-// helper for writing dynamic values
-void write_bytes(std::ofstream& out, const std::string& s) {
-  out.write(s.data(), static_cast<std::streamsize>(s.size()));
-  if (!out) {
-    throw std::runtime_error("failed to write WAL bytes");
-  }
-}
-
-// Ensure inputs do not exceed allocated size to avoid truncation
-SizeType checked_size(const std::string& bytes, const char* field_name) {
-  // The file format stores dynamic field lengths as uint32_t, so reject values
-  // that would truncate during serialization.
-  if (bytes.size() > std::numeric_limits<SizeType>::max()) {
-    throw std::runtime_error(std::string("WAL ") + field_name + " is too large");
-  }
-  return static_cast<SizeType>(bytes.size());
-}
-
 LengthType checked_record_length(std::size_t record_length) {
   // Keep writer and reader limits aligned: if we will not replay it, do not
   // write it.
@@ -68,31 +31,6 @@ LengthType checked_record_length(std::size_t record_length) {
     throw std::runtime_error("WAL record is too large");
   }
   return static_cast<LengthType>(record_length);
-}
-
-// Parser Helpers
-template <typename T>
-bool consume_primitive(const std::string& record, std::size_t& offset, T& value) {
-  // Parse from an already-bounded record buffer. The offset check keeps malformed
-  // payloads from reading past the record boundary.
-  if (offset > record.size() || record.size() - offset < sizeof(T)) {
-    return false;
-  }
-  std::memcpy(&value, record.data() + offset, sizeof(T));
-  offset += sizeof(T);
-  return true;
-}
-
-bool consume_bytes(const std::string& record, std::size_t& offset, SizeType size,
-                   std::string& value) {
-  // Dynamic fields are trusted only after confirming the declared length fits
-  // inside the current record payload.
-  if (offset > record.size() || record.size() - offset < size) {
-    return false;
-  }
-  value.assign(record.data() + offset, size);
-  offset += size;
-  return true;
 }
 
 // Reconstruct the KV store by line
@@ -104,19 +42,19 @@ bool apply_record(const std::string& record,
 
   // Operation
   OpType op = 0;
-  if (!consume_primitive(record, offset, op)) {
+  if (!binary_io::consume_primitive(record, offset, op)) {
     return false;
   }
 
   // Key Size
   SizeType key_size = 0;
-  if (!consume_primitive(record, offset, key_size)) {
+  if (!binary_io::consume_primitive(record, offset, key_size)) {
     return false;
   }
 
   // Key itself
   std::string key;
-  if (!consume_bytes(record, offset, key_size, key)) {
+  if (!binary_io::consume_bytes(record, offset, key_size, key)) {
     return false;
   }
 
@@ -125,12 +63,12 @@ bool apply_record(const std::string& record,
     // SET records carry exactly one value after the key. Extra trailing bytes
     // make the record malformed.
     SizeType value_size = 0;
-    if (!consume_primitive(record, offset, value_size)) {
+    if (!binary_io::consume_primitive(record, offset, value_size)) {
       return false;
     }
 
     std::string value;
-    if (!consume_bytes(record, offset, value_size, value) ||
+    if (!binary_io::consume_bytes(record, offset, value_size, value) ||
         offset != record.size()) {
       return false;
     }
@@ -166,20 +104,20 @@ WriteAheadLog::WriteAheadLog(std::string path)
 // write in WAL functions
 void WriteAheadLog::append_set(const std::string& key, const std::string& value) {
   const OpType op = static_cast<OpType>(WalOp::Set);
-  const SizeType key_size = checked_size(key, "key");
-  const SizeType value_size = checked_size(value, "value");
+  const SizeType key_size = binary_io::checked_size(key, "WAL key");
+  const SizeType value_size = binary_io::checked_size(value, "WAL value");
   // Length covers the payload after the length field itself:
   // [op][key_size][key][value_size][value].
   const LengthType record_length =
       checked_record_length(sizeof(op) + sizeof(key_size) + key_size +
                             sizeof(value_size) + value_size);
 
-  write_primitive(output_, record_length);
-  write_primitive(output_, op);
-  write_primitive(output_, key_size);
-  write_bytes(output_, key);
-  write_primitive(output_, value_size);
-  write_bytes(output_, value);
+  binary_io::write_primitive(output_, record_length, "WAL primitive");
+  binary_io::write_primitive(output_, op, "WAL primitive");
+  binary_io::write_primitive(output_, key_size, "WAL primitive");
+  binary_io::write_bytes(output_, key, "WAL bytes");
+  binary_io::write_primitive(output_, value_size, "WAL primitive");
+  binary_io::write_bytes(output_, value, "WAL bytes");
 
   output_.flush();
   if (!output_) {
@@ -189,16 +127,16 @@ void WriteAheadLog::append_set(const std::string& key, const std::string& value)
 
 void WriteAheadLog::append_delete(const std::string& key) {
   const OpType op = static_cast<OpType>(WalOp::Delete);
-  const SizeType key_size = checked_size(key, "key");
+  const SizeType key_size = binary_io::checked_size(key, "WAL key");
   // Length covers the payload after the length field itself:
   // [op][key_size][key].
   const LengthType record_length =
       checked_record_length(sizeof(op) + sizeof(key_size) + key_size);
 
-  write_primitive(output_, record_length);
-  write_primitive(output_, op);
-  write_primitive(output_, key_size);
-  write_bytes(output_, key);
+  binary_io::write_primitive(output_, record_length, "WAL primitive");
+  binary_io::write_primitive(output_, op, "WAL primitive");
+  binary_io::write_primitive(output_, key_size, "WAL primitive");
+  binary_io::write_bytes(output_, key, "WAL bytes");
 
   output_.flush();
   if (!output_) {
@@ -206,11 +144,71 @@ void WriteAheadLog::append_delete(const std::string& key) {
   }
 }
 
+std::uint64_t WriteAheadLog::current_offset() {
+  output_.flush();
+  if (!output_) {
+    throw std::runtime_error("failed to flush WAL before reading offset");
+  }
+
+  output_.seekp(0, std::ios::end);
+  if (!output_) {
+    throw std::runtime_error("failed to seek WAL output stream");
+  }
+
+  const std::streampos position = output_.tellp();
+  if (position == std::streampos(-1)) {
+    throw std::runtime_error("failed to read WAL offset");
+  }
+
+  return static_cast<std::uint64_t>(position);
+}
+
+void WriteAheadLog::clear() {
+  // The WAL keeps an append stream open for normal writes. Close and reopen it
+  // around truncation so future SET/DELETE records continue using the same WAL
+  // object after persistence has been cleared.
+  output_.close();
+  output_.clear();
+
+  {
+    std::ofstream truncated(path_, std::ios::binary | std::ios::trunc);
+    if (!truncated.is_open()) {
+      throw std::runtime_error("failed to truncate WAL file: " + path_);
+    }
+
+    truncated.flush();
+    if (!truncated) {
+      throw std::runtime_error("failed to clear WAL file: " + path_);
+    }
+  }
+
+  output_.open(path_, std::ios::binary | std::ios::app);
+  if (!output_.is_open()) {
+    throw std::runtime_error("failed to reopen WAL file: " + path_);
+  }
+}
+
 // Replay the KV store after startup
 std::size_t WriteAheadLog::replay(
     std::unordered_map<std::string, std::string>& store) const {
+  return replay_from(0, store);
+}
+
+std::size_t WriteAheadLog::replay_from(
+    std::uint64_t offset,
+    std::unordered_map<std::string, std::string>& store) const {
+  if (offset > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::streamoff>::max())) {
+    throw std::runtime_error("WAL replay offset is too large");
+  }
+
   std::ifstream input(path_, std::ios::binary);
   if (!input.is_open()) {
+    return 0;
+  }
+
+  input.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+  if (!input) {
     return 0;
   }
 
@@ -220,7 +218,7 @@ std::size_t WriteAheadLog::replay(
     // Each iteration reads one framed record. A missing length means ordinary
     // EOF; a partial payload means the last write was torn and recovery stops.
     LengthType record_length = 0;
-    if (!read_primitive(input, record_length)) {
+    if (!binary_io::read_primitive(input, record_length)) {
       break;
     }
 

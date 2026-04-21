@@ -11,6 +11,7 @@ APP_SRCS := \
 	src/parser/command_parser.cpp \
 	src/server/cli_server.cpp \
 	src/store/kv_store.cpp \
+	src/persistence/snapshot.cpp \
 	src/persistence/wal.cpp
 
 TEST_SRCS := \
@@ -19,6 +20,7 @@ TEST_SRCS := \
 	src/parser/command_parser.cpp \
 	src/server/cli_server.cpp \
 	src/store/kv_store.cpp \
+	src/persistence/snapshot.cpp \
 	src/persistence/wal.cpp
 
 APP_OBJS := $(patsubst %.cpp,build/app/%.o,$(APP_SRCS))

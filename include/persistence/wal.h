@@ -2,6 +2,7 @@
 #define KV_STORE_WAL_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <string>
 #include <unordered_map>
@@ -37,6 +38,23 @@ class WriteAheadLog {
   void append_delete(const std::string& key);
 
   /**
+   * @brief Returns the current durable end offset of the WAL file.
+   *
+   * The stream is flushed before reporting the offset so snapshots can record a
+   * byte position that includes all WAL records written so far.
+   *
+   * @return Current byte offset from the beginning of the WAL file.
+   */
+  std::uint64_t current_offset();
+
+  /**
+   * @brief Truncates the WAL file and reopens it for future append records.
+   *
+   * This clears durable history without changing any in-memory store state.
+   */
+  void clear();
+
+  /**
    * @brief Replays valid WAL records into an in-memory map.
    *
    * Malformed bounded records are skipped. Replay stops at EOF, an incomplete
@@ -46,6 +64,20 @@ class WriteAheadLog {
    * @return Number of valid operations applied.
    */
   std::size_t replay(std::unordered_map<std::string, std::string>& store) const;
+
+  /**
+   * @brief Replays valid WAL records starting at a byte offset.
+   *
+   * This is used with snapshots: the snapshot stores the WAL offset it covers,
+   * and recovery replays only records written after that point.
+   *
+   * @param offset Byte offset to start replay from.
+   * @param store Store map to update while replaying the log.
+   * @return Number of valid operations applied.
+   */
+  std::size_t replay_from(
+      std::uint64_t offset,
+      std::unordered_map<std::string, std::string>& store) const;
 
  private:
   /** @brief Filesystem path of the WAL file. */

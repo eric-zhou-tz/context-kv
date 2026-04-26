@@ -1,9 +1,6 @@
 #include "parser/command_parser.h"
 
-#include <sstream>
-#include <vector>
-
-#include "common/string_utils.h"
+#include <stdexcept>
 
 namespace kv {
 namespace parser {
@@ -11,126 +8,39 @@ namespace parser {
 namespace {
 
 /**
- * @brief Joins token views into a space-separated string.
+ * @brief Validates the high-level shape of a parsed agent request.
  *
- * @param tokens Token sequence to join.
- * @param begin_index Index of the first token to include.
- * @return Joined string containing the selected tokens.
+ * The parser is responsible only for request framing. Action-specific
+ * semantics remain in the command layer.
+ *
+ * @param request Parsed JSON value.
+ * @throws std::invalid_argument When the request shape is invalid.
  */
-std::string JoinTokens(const std::vector<std::string_view>& tokens, std::size_t begin_index) {
-  std::ostringstream joined;
-  // SET values may contain spaces, so everything after the key is preserved as
-  // the value with single spaces between parsed tokens.
-  for (std::size_t index = begin_index; index < tokens.size(); ++index) {
-    if (index > begin_index) {
-      joined << ' ';
-    }
-    joined << tokens[index];
+void ValidateRequestShape(const Json& request) {
+  if (!request.is_object()) {
+    throw std::invalid_argument("request must be a JSON object");
   }
-  return joined.str();
-}
-
-/**
- * @brief Constructs an invalid command with an error message.
- *
- * @param message Parsing failure description.
- * @return Invalid command populated with the supplied message.
- */
-Command MakeInvalidCommand(const std::string& message) {
-  Command command;
-  command.type = CommandType::kInvalid;
-  command.error_message = message;
-  return command;
+  if (!request.contains("action")) {
+    throw std::invalid_argument("request.action is required");
+  }
+  if (!request.at("action").is_string()) {
+    throw std::invalid_argument("request.action must be a string");
+  }
+  if (request.contains("params") && !request.at("params").is_object()) {
+    throw std::invalid_argument("request.params must be an object");
+  }
 }
 
 }  // namespace
 
-bool Command::IsValid() const {
-  return type != CommandType::kInvalid;
-}
-
-Command CommandParser::Parse(const std::string& input) const {
-  // Normalize only the command framing. Key and value contents keep their
-  // original casing.
-  const std::string trimmed = common::Trim(input);
-  if (trimmed.empty()) {
-    return MakeInvalidCommand("empty command");
+Json parse_agent_request(const std::string& raw) {
+  try {
+    Json request = Json::parse(raw);
+    ValidateRequestShape(request);
+    return request;
+  } catch (const Json::parse_error&) {
+    throw std::invalid_argument("request must be valid JSON");
   }
-
-  const std::vector<std::string_view> tokens = common::SplitWhitespaceView(trimmed);
-  const std::string verb = common::ToUpper(tokens.front());
-
-  if (verb == "SET") {
-    // Require at least one value token, then join the remaining tokens so
-    // values such as "hello world" survive parsing.
-    if (tokens.size() < 3) {
-      return MakeInvalidCommand("usage: SET <key> <value>");
-    }
-
-    Command command;
-    command.type = CommandType::kSet;
-    command.key = std::string(tokens[1]);
-    command.value = JoinTokens(tokens, 2);
-    return command;
-  }
-
-  if (verb == "GET") {
-    if (tokens.size() != 2) {
-      return MakeInvalidCommand("usage: GET <key>");
-    }
-
-    Command command;
-    command.type = CommandType::kGet;
-    command.key = std::string(tokens[1]);
-    return command;
-  }
-
-  if (verb == "DEL" || verb == "DELETE") {
-    // The CLI exposes both spellings, but storage receives one delete command
-    // type either way.
-    if (tokens.size() != 2) {
-      return MakeInvalidCommand("usage: DELETE <key>");
-    }
-
-    Command command;
-    command.type = CommandType::kDel;
-    command.key = std::string(tokens[1]);
-    return command;
-  }
-
-  if (verb == "CLEAR_PERSISTENCE" || verb == "CLEAR-PERSISTENCE") {
-    if (tokens.size() != 1) {
-      return MakeInvalidCommand("usage: CLEAR PERSISTENCE");
-    }
-
-    Command command;
-    command.type = CommandType::kClearPersistence;
-    return command;
-  }
-
-  if (verb == "CLEAR") {
-    if (tokens.size() != 2 || common::ToUpper(tokens[1]) != "PERSISTENCE") {
-      return MakeInvalidCommand("usage: CLEAR PERSISTENCE");
-    }
-
-    Command command;
-    command.type = CommandType::kClearPersistence;
-    return command;
-  }
-
-  if (verb == "HELP") {
-    Command command;
-    command.type = CommandType::kHelp;
-    return command;
-  }
-
-  if (verb == "EXIT" || verb == "QUIT") {
-    Command command;
-    command.type = CommandType::kExit;
-    return command;
-  }
-
-  return MakeInvalidCommand("unknown command");
 }
 
 }  // namespace parser
